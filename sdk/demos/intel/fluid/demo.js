@@ -54,8 +54,9 @@ let gl = null;
 let gShaderStr = [];
 let gPrograms = [];
 let gParticleBuffers = [];
-
 let gUpdateParams = null;
+let gUpdateSortCB = [];
+
 let gFInitialParticleSpacing = 0.0045;
 let gMapHeight = 1.2;
 let gMapWidth = (4.0 / 3.0) * gMapHeight;
@@ -252,10 +253,7 @@ function resetParticles() {
 function restart(num) {
   gNumParticles = num * 1024;
   gDispatchNum = Math.ceil(gNumParticles / gThreads);
-  destroyBuffers();
-  initBuffers();
-  changeMode(gSimMode);
-  initRender();
+  resetParticles();
 }
 
 function gpuSort() {
@@ -265,16 +263,15 @@ function gpuSort() {
 
   // Sort the data
   // First sort the rows for the levels <= to the block size
+  gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[0]);
   for ( let level = 2; level <= BITONIC_BLOCK_SIZE; level <<= 1 ) {
     let sortCB = new Int32Array(4);
     sortCB[0] = level;
     sortCB[1] = level;
     sortCB[2] = MATRIX_HEIGHT;
     sortCB[3] = MATRIX_WIDTH;
-    let updateSortCB = gl.createBuffer();
-    gl.bindBuffer(gl.UNIFORM_BUFFER, updateSortCB);
-    gl.bufferData(gl.UNIFORM_BUFFER, sortCB, gl.STATIC_DRAW);
-    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, updateSortCB);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, sortCB, 0);
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, gUpdateSortCB[0]);
 
     // Sort the row data
     computePass(CS_BITONIC_SORT, gNumParticles / BITONIC_BLOCK_SIZE, 1, 1);
@@ -288,10 +285,9 @@ function gpuSort() {
     sortCB1[1] = (level & ~NUM_ELEMENTS) / BITONIC_BLOCK_SIZE;
     sortCB1[2] = MATRIX_WIDTH;
     sortCB1[3] = MATRIX_HEIGHT;
-    let updateSortCB1 = gl.createBuffer();
-    gl.bindBuffer(gl.UNIFORM_BUFFER, updateSortCB1);
-    gl.bufferData(gl.UNIFORM_BUFFER, sortCB1, gl.STATIC_DRAW);
-    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, updateSortCB1);
+    gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[1]);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, sortCB1, 0);
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, gUpdateSortCB[1]);
 
     // Transpose the data from buffer 1 into buffer 2
     computePass(CS_TRANSPOSE, MATRIX_WIDTH / TRANSPOSE_BLOCK_SIZE,
@@ -306,12 +302,11 @@ function gpuSort() {
     sortCB2[1] = level;
     sortCB2[2] = MATRIX_HEIGHT;
     sortCB2[3] = MATRIX_WIDTH;
-    let updateSortCB2 = gl.createBuffer();
-    gl.bindBuffer(gl.UNIFORM_BUFFER, updateSortCB2);
-    gl.bufferData(gl.UNIFORM_BUFFER, sortCB2, gl.STATIC_DRAW);
+    gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[2]);
+    gl.bufferSubData(gl.UNIFORM_BUFFER, 0, sortCB2, 0);
 
     // Transpose the data from buffer 2 back into buffer 1
-    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, updateSortCB2);
+    gl.bindBufferBase(gl.UNIFORM_BUFFER, 1, gUpdateSortCB[2]);
     gl.bindBufferBase(gl.SHADER_STORAGE_BUFFER, 4, gParticleBuffers[3]);
     computePass(CS_TRANSPOSE, MATRIX_HEIGHT / TRANSPOSE_BLOCK_SIZE,
         MATRIX_WIDTH / TRANSPOSE_BLOCK_SIZE, 1);
@@ -428,8 +423,21 @@ function initBuffers() {
   gUpdateParams = gl.createBuffer();
   gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateParams);
   gl.bufferData(gl.UNIFORM_BUFFER, new Uint8Array(data), gl.STATIC_DRAW);
-
   gl.bindBufferBase(gl.UNIFORM_BUFFER, 0, gUpdateParams);
+
+  let sortData = new ArrayBuffer(4 * 4);
+
+  gUpdateSortCB[0] = gl.createBuffer();
+  gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[0]);
+  gl.bufferData(gl.UNIFORM_BUFFER, sortData, gl.STATIC_DRAW);
+
+  gUpdateSortCB[1] = gl.createBuffer();
+  gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[1]);
+  gl.bufferData(gl.UNIFORM_BUFFER, sortData, gl.STATIC_DRAW);
+
+  gUpdateSortCB[2] = gl.createBuffer();
+  gl.bindBuffer(gl.UNIFORM_BUFFER, gUpdateSortCB[2]);
+  gl.bufferData(gl.UNIFORM_BUFFER, sortData, gl.STATIC_DRAW);
 
   let orthographic =
       function(left, right, bottom, top, near, far) {
@@ -517,7 +525,6 @@ function initCS() {
     gPrograms[v] = gl.createProgram();
     gl.attachShader(gPrograms[v], cs);
     gl.linkProgram(gPrograms[v]);
-    gl.useProgram(gPrograms[v]);
   });
 }
 
@@ -525,7 +532,14 @@ function destroyBuffers() {
   gl.deleteBuffer(gParticleBuffers[0]);
   gl.deleteBuffer(gParticleBuffers[1]);
   gl.deleteBuffer(gParticleBuffers[2]);
+  gl.deleteBuffer(gParticleBuffers[3]);
+  gl.deleteBuffer(gParticleBuffers[4]);
+  gl.deleteBuffer(gParticleBuffers[5]);
+  gl.deleteBuffer(gParticleBuffers[6]);
   gl.deleteBuffer(gUpdateParams);
+  gl.deleteBuffer(gUpdateSortCB[0]);
+  gl.deleteBuffer(gUpdateSortCB[1]);
+  gl.deleteBuffer(gUpdateSortCB[2]);
 }
 
 function renderPass() {
@@ -664,7 +678,7 @@ function loadShaderFromFile(filename, index, onLoadShader) {
   request.send();
 }
 
-var main = (function () {
+(function () {
   let shaders = [
     'shader.vert',
     'shader.frag',
